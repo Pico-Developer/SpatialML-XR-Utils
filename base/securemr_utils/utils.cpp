@@ -228,9 +228,6 @@ std::string ReadModelValue(const Json& opSpec, const std::string& key) {
       return valueIt->get<std::string>();
     }
   }
-  if (auto valueIt = opSpec.find(key); valueIt != opSpec.end() && valueIt->is_string()) {
-    return valueIt->get<std::string>();
-  }
   return {};
 }
 
@@ -256,12 +253,6 @@ std::vector<ManifestPipelineSpec> ReadManifestPipelineSpecs(const Json& manifest
     }
   }
 
-  if (specs.empty()) {
-    const std::string legacyPipelinePath = ReadStringValue(manifest, {"pipeline", "path"});
-    if (!legacyPipelinePath.empty()) {
-      specs.push_back({"detection", legacyPipelinePath});
-    }
-  }
   return specs;
 }
 
@@ -287,6 +278,11 @@ bool ManifestSupportsXr(const Json& manifest) {
     }
   }
   return false;
+}
+
+bool IsSchemaV2(const Json& manifest) {
+  return manifest.value("schema_version", std::string{}) == "2" && !manifest.contains("model") &&
+         !manifest.contains("models");
 }
 
 std::string AttributeSummary(const TensorAttribute& attr) {
@@ -347,8 +343,7 @@ std::string SanitizeModelName(std::string modelName) {
   return modelName;
 }
 
-void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot, const std::string& defaultModelPath,
-                         const std::string& defaultModelName) {
+void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot) {
   auto operatorsIt = pipelineJson.find("operators");
   if (operatorsIt == pipelineJson.end() || !operatorsIt->is_array()) {
     return;
@@ -363,24 +358,15 @@ void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot
     }
     std::string modelPath = ReadModelValue(opSpec, "bin_path");
     if (modelPath.empty()) {
-      modelPath = ReadModelValue(opSpec, "model_file");
+      throw std::runtime_error("run_algorithm requires inline model.bin_path");
     }
-    if (modelPath.empty()) {
-      modelPath = defaultModelPath;
-    }
-    if (!modelPath.empty()) {
-      opSpec["model_asset"] = JoinAssetPath(packageAssetRoot, modelPath);
-    }
-    opSpec.erase("model_file");
-    opSpec.erase("model_file_host");
+    opSpec["model_asset"] = JoinAssetPath(packageAssetRoot, modelPath);
 
     std::string modelName = ReadModelValue(opSpec, "model_name");
     if (modelName.empty()) {
-      modelName = defaultModelName;
+      throw std::runtime_error("run_algorithm requires inline model.model_name");
     }
-    if (!modelName.empty()) {
-      opSpec["model_name"] = SanitizeModelName(modelName);
-    }
+    opSpec["model_name"] = SanitizeModelName(modelName);
 
     std::string modelType = ReadModelValue(opSpec, "model_type");
     if (!modelType.empty()) {
@@ -393,8 +379,7 @@ void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot
   }
 }
 
-void PatchModelOperatorsForFiles(Json& pipelineJson, const std::filesystem::path& packageRoot,
-                                 const std::string& defaultModelPath, const std::string& defaultModelName) {
+void PatchModelOperatorsForFiles(Json& pipelineJson, const std::filesystem::path& packageRoot) {
   auto operatorsIt = pipelineJson.find("operators");
   if (operatorsIt == pipelineJson.end() || !operatorsIt->is_array()) {
     return;
@@ -410,27 +395,15 @@ void PatchModelOperatorsForFiles(Json& pipelineJson, const std::filesystem::path
 
     std::string modelPath = ReadModelValue(opSpec, "bin_path");
     if (modelPath.empty()) {
-      modelPath = ReadModelValue(opSpec, "model_file");
+      throw std::runtime_error("run_algorithm requires inline model.bin_path");
     }
-    if (modelPath.empty()) {
-      modelPath = ReadModelValue(opSpec, "model_file_host");
-    }
-    if (modelPath.empty()) {
-      modelPath = defaultModelPath;
-    }
-    if (!modelPath.empty()) {
-      opSpec["model_file"] = JoinFilePath(packageRoot, modelPath).string();
-    }
-    opSpec.erase("model_asset");
-    opSpec.erase("model_file_host");
+    opSpec["model_file"] = JoinFilePath(packageRoot, modelPath).string();
 
     std::string modelName = ReadModelValue(opSpec, "model_name");
     if (modelName.empty()) {
-      modelName = defaultModelName;
+      throw std::runtime_error("run_algorithm requires inline model.model_name");
     }
-    if (!modelName.empty()) {
-      opSpec["model_name"] = SanitizeModelName(modelName);
-    }
+    opSpec["model_name"] = SanitizeModelName(modelName);
 
     std::string modelType = ReadModelValue(opSpec, "model_type");
     if (!modelType.empty()) {
@@ -817,7 +790,7 @@ bool SecureMrUtils::PrepareBindings(const Json& jsonSpec,
 bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     const std::string& packageAssetRoot, const std::shared_ptr<FrameworkSession>& session,
     const std::unordered_map<std::string, std::shared_ptr<GlobalTensor>>& externalGlobals,
-    ModelPackagePipelineBundle& outBundle, std::string& outError) {
+    ModelPackagePipelineBundle& outBundle, std::string& outError, const ModelPackageLoadOptions& options) {
   outBundle = {};
   outError.clear();
   if (session == nullptr) {
@@ -831,6 +804,10 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     return false;
   }
   outBundle.manifest = *manifest;
+  if (!IsSchemaV2(outBundle.manifest)) {
+    outError = "model package manifest schema_version must be 2";
+    return false;
+  }
   if (!ManifestSupportsXr(outBundle.manifest)) {
     outError = "model package manifest runtime.supported_modes must include xr";
     return false;
@@ -841,23 +818,6 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
   if (pipelineSpecs.empty()) {
     outError = "model package manifest missing pipelines";
     return false;
-  }
-
-  const std::string modelBinRelativePath = ReadStringValue(outBundle.manifest, {"model", "bin_path"});
-
-  std::string modelJsonRelativePath = ReadStringValue(outBundle.manifest, {"model", "extra_json_path"});
-  if (modelJsonRelativePath.empty()) {
-    modelJsonRelativePath = ReadStringValue(outBundle.manifest, {"model", "json_path"});
-  }
-  std::string modelName;
-  if (!modelJsonRelativePath.empty()) {
-    const std::string modelJsonAssetPath = JoinAssetPath(packageAssetRoot, modelJsonRelativePath);
-    auto modelJson = LoadJsonAsset(modelJsonAssetPath, &outError);
-    if (!modelJson.has_value()) {
-      return false;
-    }
-    outBundle.modelJson = *modelJson;
-    modelName = SanitizeModelName(outBundle.modelJson.value("model_name", ""));
   }
 
   auto ensureSharedBinding = [&](const std::string& pipelineId, ModelPackagePipeline& package,
@@ -910,18 +870,22 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     if (!pipelineJson.has_value()) {
       return false;
     }
-    PatchModelOperators(*pipelineJson, packageAssetRoot, modelBinRelativePath, modelName);
+    try {
+      PatchModelOperators(*pipelineJson, packageAssetRoot);
+    } catch (const std::exception& e) {
+      outError = e.what();
+      return false;
+    }
     ResolvePackageAssetPaths(*pipelineJson, packageAssetRoot);
 
     PipelineDeserializationResult deserializeResult;
-    if (!DeserializePipelineFromJson(*pipelineJson, session, deserializeResult, outError)) {
+    if (!DeserializePipelineFromJson(*pipelineJson, session, deserializeResult, outError, options.deserializationOptions)) {
       outError = Fmt("failed to deserialize pipeline '%s': %s", spec.id.c_str(), outError.c_str());
       return false;
     }
 
     ModelPackagePipeline package;
     package.manifest = outBundle.manifest;
-    package.modelJson = outBundle.modelJson;
     package.pipelineJson = *pipelineJson;
     package.pipeline = std::move(deserializeResult.pipeline);
     package.tensorMap = std::move(deserializeResult.tensorMap);
@@ -968,6 +932,10 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
   const auto manifestPath = packageRoot / "manifest.json";
   try {
     outBundle.manifest = LoadJsonFromFile(manifestPath);
+    if (!IsSchemaV2(outBundle.manifest)) {
+      outError = "model package manifest schema_version must be 2";
+      return false;
+    }
   } catch (const std::exception& e) {
     outError = e.what();
     return false;
@@ -982,22 +950,6 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
   if (pipelineSpecs.empty()) {
     outError = "model package manifest missing pipelines";
     return false;
-  }
-
-  const std::string defaultModelPath = ReadStringValue(outBundle.manifest, {"model", "bin_path"});
-  std::string modelJsonRelativePath = ReadStringValue(outBundle.manifest, {"model", "extra_json_path"});
-  if (modelJsonRelativePath.empty()) {
-    modelJsonRelativePath = ReadStringValue(outBundle.manifest, {"model", "json_path"});
-  }
-  std::string modelName;
-  if (!modelJsonRelativePath.empty()) {
-    try {
-      outBundle.modelJson = LoadJsonFromFile(JoinFilePath(packageRoot, modelJsonRelativePath));
-      modelName = SanitizeModelName(outBundle.modelJson.value("model_name", ""));
-    } catch (const std::exception& e) {
-      outError = e.what();
-      return false;
-    }
   }
 
   auto ensureSharedBinding = [&](const std::string& pipelineId, ModelPackagePipeline& package,
@@ -1054,21 +1006,25 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
       return false;
     }
 
-    PatchModelOperatorsForFiles(pipelineJson, packageRoot, defaultModelPath, modelName);
+    try {
+      PatchModelOperatorsForFiles(pipelineJson, packageRoot);
+    } catch (const std::exception& e) {
+      outError = e.what();
+      return false;
+    }
     ResolvePackageFileAssetPaths(pipelineJson, packageRoot);
     if (options.stripRectifiedVstAccess) {
       RemoveOperatorsByType(pipelineJson, {"rectified_vst_access", "camera_access"}, true);
     }
 
     PipelineDeserializationResult deserializeResult;
-    if (!DeserializePipelineFromJson(pipelineJson, session, deserializeResult, outError)) {
+    if (!DeserializePipelineFromJson(pipelineJson, session, deserializeResult, outError, options.deserializationOptions)) {
       outError = Fmt("failed to deserialize pipeline '%s': %s", spec.id.c_str(), outError.c_str());
       return false;
     }
 
     ModelPackagePipeline package;
     package.manifest = outBundle.manifest;
-    package.modelJson = outBundle.modelJson;
     package.pipelineJson = pipelineJson;
     package.pipeline = std::move(deserializeResult.pipeline);
     package.tensorMap = std::move(deserializeResult.tensorMap);

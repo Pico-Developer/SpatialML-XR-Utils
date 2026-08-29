@@ -17,6 +17,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -247,6 +248,120 @@ TensorReference ResolveTensorReference(
   return {.tensor = tensor, .slice = (*tensor)[dims]};
 }
 
+std::vector<std::vector<int>> ParseAssignmentSlices(const Json& value, const char* key) {
+  if (!value.is_array() || value.empty()) {
+    throw std::runtime_error(Fmt("%s must be a non-empty array", key));
+  }
+
+  std::vector<std::vector<int>> slices;
+  slices.reserve(value.size());
+  for (const auto& dimension : value) {
+    if (!dimension.is_array() || dimension.empty() || dimension.size() > 3) {
+      throw std::runtime_error(Fmt("%s entries must contain 1 to 3 integers", key));
+    }
+
+    std::vector<int> parsed;
+    parsed.reserve(dimension.size());
+    for (const auto& element : dimension) {
+      if (!element.is_number_integer()) {
+        throw std::runtime_error(Fmt("%s entries must contain 1 to 3 integers", key));
+      }
+      parsed.push_back(element.get<int>());
+    }
+    if (parsed.size() == 1) {
+      parsed.push_back(parsed.front() + 1);
+    }
+    slices.push_back(std::move(parsed));
+  }
+  return slices;
+}
+
+std::vector<int> ParseAssignmentChannelSlice(const Json& value, const char* key) {
+  if (!value.is_array() || value.empty() || value.size() > 3) {
+    throw std::runtime_error(Fmt("%s must contain 1 to 3 integers", key));
+  }
+
+  std::vector<int> slice;
+  slice.reserve(value.size());
+  for (const auto& element : value) {
+    if (!element.is_number_integer()) {
+      throw std::runtime_error(Fmt("%s must contain 1 to 3 integers", key));
+    }
+    slice.push_back(element.get<int>());
+  }
+  return slice;
+}
+
+PipelineTensor::Slice FullTensorSlice(const std::shared_ptr<PipelineTensor>& tensor, const char* key) {
+  const auto attribute = tensor->getAttribute();
+  if (!std::holds_alternative<TensorAttribute>(attribute)) {
+    throw std::runtime_error(Fmt("%s cannot slice a glTF tensor", key));
+  }
+
+  const auto& tensorAttribute = std::get<TensorAttribute>(attribute);
+  if (tensorAttribute.dimensions.empty()) {
+    throw std::runtime_error(Fmt("%s requires a tensor with dimensions", key));
+  }
+
+  std::vector<std::vector<int>> slices;
+  slices.reserve(tensorAttribute.dimensions.size());
+  for (const int dimension : tensorAttribute.dimensions) {
+    if (dimension <= 0) {
+      throw std::runtime_error(Fmt("%s cannot slice a tensor with non-positive dimensions", key));
+    }
+    slices.push_back({0, dimension});
+  }
+  return (*tensor)[slices];
+}
+
+PipelineTensor::Slice ApplyAssignmentChannelSlice(PipelineTensor::Slice slice, const Json& value, const char* key) {
+  const auto channelSlice = ParseAssignmentChannelSlice(value, key);
+  if (channelSlice.size() == 1) {
+    slice[channelSlice[0]];
+  } else if (channelSlice.size() == 2) {
+    slice[std::array<int, 2>{channelSlice[0], channelSlice[1]}];
+  } else {
+    slice[std::array<int, 3>{channelSlice[0], channelSlice[1], channelSlice[2]}];
+  }
+  return slice;
+}
+
+TensorReference ResolveAssignmentTensorReference(
+    const std::string& expression,
+    const Json& opSpec,
+    const char* slicesKey,
+    const char* slicesTensorKey,
+    const char* channelSliceKey,
+    const std::function<std::shared_ptr<PipelineTensor>(const std::string&)>& requireTensor) {
+  const bool hasInlineSlices = opSpec.contains(slicesKey);
+  const auto slicesTensorIt = opSpec.find(slicesTensorKey);
+  const bool hasSlicesTensor = slicesTensorIt != opSpec.end() && slicesTensorIt->is_string() &&
+                               !Trim(slicesTensorIt->get<std::string>()).empty();
+  if (hasInlineSlices && hasSlicesTensor) {
+    throw std::runtime_error(Fmt("assignment cannot combine %s and %s", slicesKey, slicesTensorKey));
+  }
+
+  auto reference = ResolveTensorReference(expression, requireTensor);
+  if (reference.slice.has_value() && (hasInlineSlices || hasSlicesTensor)) {
+    throw std::runtime_error(Fmt("tensor reference '%s' cannot mix bracket and explicit slices", expression.c_str()));
+  }
+
+  if (hasInlineSlices) {
+    reference.slice = (*reference.tensor)[ParseAssignmentSlices(opSpec.at(slicesKey), slicesKey)];
+  } else if (hasSlicesTensor) {
+    reference.slice = (*reference.tensor)[requireTensor(slicesTensorIt->get<std::string>())];
+  } else if (opSpec.contains(channelSliceKey) && !reference.slice.has_value()) {
+    reference.slice = FullTensorSlice(reference.tensor, channelSliceKey);
+  }
+
+  if (opSpec.contains(channelSliceKey)) {
+    reference.slice = ApplyAssignmentChannelSlice(
+        reference.slice.has_value() ? *reference.slice : FullTensorSlice(reference.tensor, channelSliceKey),
+        opSpec.at(channelSliceKey), channelSliceKey);
+  }
+  return reference;
+}
+
 Pipeline::ElementwiseOp ParseElementwiseOp(const std::string& op) {
   const std::string value = ToLower(op);
   if (value == "min") return Pipeline::ElementwiseOp::MIN;
@@ -331,6 +446,22 @@ XrSecureMrMatrixSortTypePICO ParseMatrixSortType(const std::string& sortType) {
     return XR_SECURE_MR_MATRIX_SORT_TYPE_COLUMN_PICO;
   }
   throw std::runtime_error(Fmt("unsupported sort_type '%s'", sortType.c_str()));
+}
+
+std::string ReadOperatorStringOption(const Json& opSpec,
+                                     std::initializer_list<const char*> keys,
+                                     const char* defaultValue) {
+  for (const char* key : keys) {
+    const auto it = opSpec.find(key);
+    if (it != opSpec.end() && it->is_string()) {
+      return it->get<std::string>();
+    }
+  }
+  const auto attrsIt = opSpec.find("attrs");
+  if (attrsIt != opSpec.end() && attrsIt->is_array() && !attrsIt->empty() && attrsIt->front().is_string()) {
+    return attrsIt->front().get<std::string>();
+  }
+  return defaultValue;
 }
 
 XrSecureMrAudioFormatPcmPICO ParseAudioPcmFormat(const std::string& pcmType) {
@@ -703,8 +834,8 @@ std::string FormatOperatorType(const std::string& typeName) {
   }
   static const std::unordered_map<std::string, std::string> kAliases = {
       {"camera_access", "camera_access"},
-      {"UNKNOWN", "unsupported_unknown"},
-      {"XR_SECURE_MR_OPERATOR_TYPE_UNKNOWN_PICO", "unsupported_unknown"},
+      {"UNKNOWN", "unknown"},
+      {"XR_SECURE_MR_OPERATOR_TYPE_UNKNOWN_PICO", "unknown"},
       {"RECTIFIED_VST_ACCESS", "camera_access"},
       {"XR_SECURE_MR_OPERATOR_TYPE_RECTIFIED_VST_ACCESS_PICO", "camera_access"},
       {"get_affine", "get_affine"},
@@ -1113,9 +1244,7 @@ bool DeserializePipelineFromJson(const Json& spec,
         return tensor;
       };
 
-      if (type == "unsupported_unknown") {
-        throw std::runtime_error("unknown SecureMR operator type is not supported by the package loader");
-      } else if (type == "camera_access") {
+      if (type == "camera_access") {
         if (outputs.size() != 4) {
           throw std::runtime_error("camera_access outputs malformed");
         }
@@ -1159,8 +1288,10 @@ bool DeserializePipelineFromJson(const Json& spec,
         if (inputs.empty() || outputs.empty()) {
           throw std::runtime_error("assignment requires input and output tensors");
         }
-        const auto srcRef = ResolveTensorReference(inputs[0], requireTensor);
-        const auto dstRef = ResolveTensorReference(outputs[0], requireTensor);
+        const auto srcRef = ResolveAssignmentTensorReference(inputs[0], opSpec, "src_slices", "src_slices_tensor",
+                                                             "src_channel_slice", requireTensor);
+        const auto dstRef = ResolveAssignmentTensorReference(outputs[0], opSpec, "dst_slices", "dst_slices_tensor",
+                                                             "dst_channel_slice", requireTensor);
         if (srcRef.slice.has_value() && dstRef.slice.has_value()) {
           pipeline->assignment(*srcRef.slice, *dstRef.slice);
         } else if (srcRef.slice.has_value()) {
@@ -1271,14 +1402,13 @@ bool DeserializePipelineFromJson(const Json& spec,
         if (outputs.empty()) {
           throw std::runtime_error("cam_space_to_xr_local requires at least one output");
         }
-        const std::string eye = ToLower(opSpec.value("eye", "left"));
-        if (eye == "right") {
-          pipeline->camSpace2XrLocal(requireFieldOrIndex("timestamp", inputs, 0, "cam_space_to_xr_local"),
-                                     requireByIndex(outputs, 0, "cam_space_to_xr_local output"), nullptr);
-        } else {
-          pipeline->camSpace2XrLocal(requireFieldOrIndex("timestamp", inputs, 0, "cam_space_to_xr_local"), nullptr,
-                                     requireByIndex(outputs, 0, "cam_space_to_xr_local output"));
+        if (outputs.size() > 2) {
+          throw std::runtime_error("cam_space_to_xr_local supports at most two outputs");
         }
+        pipeline->camSpace2XrLocal(
+            requireFieldOrIndex("timestamp", inputs, 0, "cam_space_to_xr_local"),
+            requireByIndex(outputs, 0, "cam_space_to_xr_local right-eye output"),
+            outputs.size() > 1 ? requireByIndex(outputs, 1, "cam_space_to_xr_local left-eye output") : nullptr);
       } else if (type == "compare_to") {
         if (outputs.empty()) {
           throw std::runtime_error("compare_to requires one output");
@@ -1293,7 +1423,7 @@ bool DeserializePipelineFromJson(const Json& spec,
           throw std::runtime_error("normalize requires input and output tensors");
         }
         pipeline->normalize(requireByIndex(inputs, 0, "normalize input"), requireByIndex(outputs, 0, "normalize output"),
-                            ParseNormalizeType(opSpec.value("normalize_type", "l2")));
+                            ParseNormalizeType(ReadOperatorStringOption(opSpec, {"normalize_type", "norm_type"}, "l2")));
       } else if (type == "argmax") {
         if (inputs.empty() || outputs.empty()) {
           throw std::runtime_error("argmax requires input and output tensors");
@@ -1316,7 +1446,8 @@ bool DeserializePipelineFromJson(const Json& spec,
         if (inputs.empty() || outputs.empty()) {
           throw std::runtime_error("sort_matrix requires input and at least one output");
         }
-        const auto sortType = ParseMatrixSortType(opSpec.value("sort_type", "row"));
+        const auto sortType = ParseMatrixSortType(
+            ReadOperatorStringOption(opSpec, {"mode", "axis", "sort_type"}, "row"));
         if (sortType == XR_SECURE_MR_MATRIX_SORT_TYPE_COLUMN_PICO) {
           pipeline->sortMatByColumn(requireByIndex(inputs, 0, "sort_matrix input"),
                                     outputs.size() > 0 ? requireByIndex(outputs, 0, "sort_matrix output") : nullptr,
@@ -1478,21 +1609,75 @@ bool DeserializePipelineFromJson(const Json& spec,
         }
         pipeline->runJavascript(script.data(), script.size(), scriptOperands, scriptResults);
       } else if (type == "draw_text") {
-        const std::string text = tensorNameFromFieldOrIndex("text", inputs, 0);
-        const std::string start = tensorNameFromFieldOrIndex("start", inputs, 1);
-        const std::string colors = tensorNameFromFieldOrIndex("colors", inputs, 2);
-        const std::string textureId = tensorNameFromFieldOrIndex("texture_id", inputs, 3);
-        const std::string fontSize = tensorNameFromFieldOrIndex("font_size", inputs, 4);
         const std::string gltf = tensorNameFromFieldOrIndex("gltf", inputs, 5);
-        if (gltf.empty() || text.empty() || start.empty() || fontSize.empty() || colors.empty() || textureId.empty()) {
+        if (gltf.empty()) {
           throw std::runtime_error(
-              "draw_text requires gltf, text, start, font_size, colors and texture_id fields or positional inputs");
+              "draw_text requires gltf");
         }
+        auto parseText = [&]() -> std::variant<std::shared_ptr<PipelineTensor>, std::string> {
+          if (auto it = opSpec.find("text"); it != opSpec.end()) {
+            if (it->is_string()) {
+              const auto tensorIt = outResult.tensorMap.find(it->get<std::string>());
+              if (tensorIt != outResult.tensorMap.end()) {
+                return tensorIt->second;
+              }
+              return it->get<std::string>();
+            }
+            if (it->is_number() || it->is_array()) return requireTensor(tensorNameFromFieldOrIndex("text", inputs, 0));
+          }
+          const std::string name = tensorNameFromFieldOrIndex("text", inputs, 0);
+          if (name.empty()) throw std::runtime_error("draw_text requires text");
+          return requireTensor(name);
+        };
+        auto parseStart = [&]() -> std::variant<std::shared_ptr<PipelineTensor>, std::tuple<float, float>> {
+          if (auto it = opSpec.find("start"); it != opSpec.end() && it->is_array()) {
+            if (it->size() != 2 || !(*it)[0].is_number() || !(*it)[1].is_number()) {
+              throw std::runtime_error("draw_text start must contain two numbers");
+            }
+            return std::make_tuple((*it)[0].get<float>(), (*it)[1].get<float>());
+          }
+          return requireTensor(tensorNameFromFieldOrIndex("start", inputs, 1));
+        };
+        auto parseFontSize = [&]() -> std::variant<std::shared_ptr<PipelineTensor>, float> {
+          if (auto it = opSpec.find("font_size"); it != opSpec.end() && it->is_number()) return it->get<float>();
+          return requireTensor(tensorNameFromFieldOrIndex("font_size", inputs, 4));
+        };
+        auto parseTextureId = [&]() -> std::variant<std::shared_ptr<PipelineTensor>, uint16_t> {
+          if (auto it = opSpec.find("texture_id"); it != opSpec.end() && it->is_number_integer()) {
+            return static_cast<uint16_t>(it->get<int>());
+          }
+          if (auto it = opSpec.find("texture_id"); it != opSpec.end()) {
+            return ParseTensorOrUInt16(*it, requireTensor);
+          }
+          const std::string textureName = tensorNameFromFieldOrIndex("texture_id", inputs, 3);
+          if (textureName.empty()) throw std::runtime_error("draw_text requires texture_id");
+          return requireTensor(textureName);
+        };
+        auto parseColors = [&]() -> std::variant<std::shared_ptr<PipelineTensor>, std::array<std::array<uint8_t, 4>, 2>> {
+          if (auto it = opSpec.find("colors"); it != opSpec.end() && it->is_array() && it->size() == 2) {
+            std::array<std::array<uint8_t, 4>, 2> colors{};
+            for (size_t row = 0; row < 2; ++row) {
+              if (!(*it)[row].is_array() || (*it)[row].size() != 4) throw std::runtime_error("draw_text colors must be 2 RGBA values");
+              for (size_t col = 0; col < 4; ++col) colors[row][col] = static_cast<uint8_t>((*it)[row][col].get<int>());
+            }
+            return colors;
+          }
+          return requireTensor(tensorNameFromFieldOrIndex("colors", inputs, 2));
+        };
+        const std::string textName = tensorNameFromFieldOrIndex("text", inputs, 0);
+        const std::string startName = tensorNameFromFieldOrIndex("start", inputs, 1);
+        const std::string colorsName = tensorNameFromFieldOrIndex("colors", inputs, 2);
+        const std::string textureName = tensorNameFromFieldOrIndex("texture_id", inputs, 3);
+        const std::string fontName = tensorNameFromFieldOrIndex("font_size", inputs, 4);
+        if (opSpec.find("text") == opSpec.end() && textName.empty()) throw std::runtime_error("draw_text requires text");
+        if (opSpec.find("start") == opSpec.end() && startName.empty()) throw std::runtime_error("draw_text requires start");
+        if (opSpec.find("colors") == opSpec.end() && colorsName.empty()) throw std::runtime_error("draw_text requires colors");
+        if (opSpec.find("texture_id") == opSpec.end() && textureName.empty()) throw std::runtime_error("draw_text requires texture_id");
+        if (opSpec.find("font_size") == opSpec.end() && fontName.empty()) throw std::runtime_error("draw_text requires font_size");
         pipeline->execRenderCommand(std::make_shared<RenderCommand_DrawText>(
             requireTensor(gltf), opSpec.value("language_and_locale", "en-US"),
             ParseTypeFace(opSpec.value("typeface", "default")), opSpec.value("canvas_width", 256),
-            opSpec.value("canvas_height", 64), requireTensor(text), requireTensor(start), requireTensor(fontSize),
-            requireTensor(colors), requireTensor(textureId)));
+            opSpec.value("canvas_height", 64), parseText(), parseStart(), parseFontSize(), parseColors(), parseTextureId()));
       } else if (type == "load_texture") {
         const std::string gltf = opSpec.value("gltf", "");
         const std::string textureSrc = opSpec.value("rgb_image", inputs.empty() ? "" : inputs[0]);
@@ -1567,8 +1752,12 @@ bool DeserializePipelineFromJson(const Json& spec,
         command->gltfTensor = requireTensor(gltf);
         command->pose = requireTensor(pose);
         command->viewLocked = opSpec.value("view_locked", false);
-        if (auto visibleIt = opSpec.find("visible"); visibleIt != opSpec.end() && visibleIt->is_string()) {
-          command->visible = requireTensor(visibleIt->get<std::string>());
+        if (auto visibleIt = opSpec.find("visible"); visibleIt != opSpec.end()) {
+          if (visibleIt->is_string()) {
+            command->visible = requireTensor(visibleIt->get<std::string>());
+          } else if (visibleIt->is_boolean()) {
+            command->visible = makeBoolTensor(visibleIt->get<bool>());
+          }
         }
         pipeline->execRenderCommand(command);
       } else if (type == "scenegraph_visibility") {
