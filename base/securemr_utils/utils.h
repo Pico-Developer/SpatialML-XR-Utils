@@ -38,7 +38,6 @@ struct TensorBinding {
 
 struct ModelPackagePipeline {
   Json manifest;
-  Json modelJson;
   Json pipelineJson;
   std::shared_ptr<Pipeline> pipeline;
   std::unordered_map<std::string, std::shared_ptr<PipelineTensor>> tensorMap;
@@ -51,7 +50,6 @@ struct ModelPackagePipeline {
 
 struct ModelPackagePipelineBundle {
   Json manifest;
-  Json modelJson;
   std::unordered_map<std::string, ModelPackagePipeline> pipelines;
   std::unordered_map<std::string, std::shared_ptr<GlobalTensor>> globalTensorMap;
   std::string detectionTensor;
@@ -59,6 +57,7 @@ struct ModelPackagePipelineBundle {
 
 struct ModelPackageLoadOptions {
   bool stripRectifiedVstAccess = false;
+  PipelineDeserializationOptions deserializationOptions;
 };
 
 class SecureMrUtils {
@@ -77,7 +76,8 @@ class SecureMrUtils {
       const std::shared_ptr<FrameworkSession>& session,
       const std::unordered_map<std::string, std::shared_ptr<GlobalTensor>>& externalGlobals,
       ModelPackagePipelineBundle& outBundle,
-      std::string& outError);
+      std::string& outError,
+      const ModelPackageLoadOptions& options = {});
   static bool LoadModelPackagePipelinesFromFiles(
       const std::filesystem::path& packageRoot,
       const std::shared_ptr<FrameworkSession>& session,
