@@ -46,165 +46,32 @@ std::string JoinInts(const std::vector<int>& values) {
   return out;
 }
 
-XrSecureMrTensorDataTypePICO MapQnnType(const std::string& type, bool& warnedFloat16) {
-  if (type == "QNN_DATATYPE_FLOAT_32") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_FLOAT32_PICO;
-  }
-  if (type == "QNN_DATATYPE_FLOAT_16") {
-    warnedFloat16 = true;
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_FLOAT32_PICO;
-  }
-  if (type == "QNN_DATATYPE_INT_32") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_INT32_PICO;
-  }
-  if (type == "QNN_DATATYPE_INT_16") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_INT16_PICO;
-  }
-  if (type == "QNN_DATATYPE_INT_8") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_INT8_PICO;
-  }
-  if (type == "QNN_DATATYPE_UINT_16") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_UINT16_PICO;
-  }
-  if (type == "QNN_DATATYPE_UINT_8") {
-    return XR_SECURE_MR_TENSOR_DATA_TYPE_UINT8_PICO;
-  }
-  return XR_SECURE_MR_TENSOR_DATA_TYPE_MAX_ENUM_PICO;
-}
-
-std::optional<TensorBinding> BuildBinding(const Json& info) {
-  if (!info.is_object()) {
-    return std::nullopt;
-  }
-
-  TensorBinding binding;
-  if (auto nameIt = info.find("name"); nameIt != info.end() && nameIt->is_string()) {
-    binding.name = nameIt->get<std::string>();
-  }
-  if (auto typeIt = info.find("dataType"); typeIt != info.end() && typeIt->is_string()) {
-    binding.qnnType = typeIt->get<std::string>();
-  }
-  if (auto dimsIt = info.find("dimensions"); dimsIt != info.end() && dimsIt->is_array()) {
-    for (const auto& dim : *dimsIt) {
-      if (dim.is_number_integer()) {
-        binding.qnnDims.push_back(dim.get<int>());
-      }
-    }
-  }
-  if (binding.name.empty() || binding.qnnType.empty() || binding.qnnDims.empty()) {
-    return std::nullopt;
-  }
-
-  bool warnedFloat16 = false;
-  binding.attr.dataType = MapQnnType(binding.qnnType, warnedFloat16);
-  if (binding.attr.dataType == XR_SECURE_MR_TENSOR_DATA_TYPE_MAX_ENUM_PICO) {
-    Log::Write(Log::Level::Error,
-               Fmt("Tensor %s has unsupported data type %s", binding.name.c_str(), binding.qnnType.c_str()));
-    return std::nullopt;
-  }
-
-  std::vector<int> dims = binding.qnnDims;
-  if (dims.size() > 1 && dims.front() == 1) {
-    dims.erase(dims.begin());
-  }
-
-  int channels = 1;
-  if (dims.size() >= 2) {
-    channels = dims.back();
-    dims.pop_back();
-  } else if (!dims.empty()) {
-    channels = 1;
-  }
-  if (dims.empty()) {
-    dims.push_back(1);
-  }
-
-  if (channels <= 0 || channels > std::numeric_limits<int8_t>::max()) {
-    Log::Write(Log::Level::Error,
-               Fmt("Tensor %s has unsupported channel count %d", binding.name.c_str(), channels));
-    return std::nullopt;
-  }
-
-  if (channels > 4) {
-    dims.push_back(channels);
-    channels = 1;
-  }
-
-  binding.attr.dimensions = dims;
-  binding.attr.channels = static_cast<int8_t>(channels);
-
-  if (binding.attr.dimensions.size() <= 1 && binding.attr.channels == 1) {
-    binding.attr.usage = XR_SECURE_MR_TENSOR_TYPE_SCALAR_PICO;
-  } else {
-    binding.attr.usage = XR_SECURE_MR_TENSOR_TYPE_MAT_PICO;
-  }
-
-  if (binding.attr.usage == XR_SECURE_MR_TENSOR_TYPE_MAT_PICO && binding.attr.dimensions.size() < 2) {
-    binding.attr.dimensions.insert(binding.attr.dimensions.begin(), 1);
-    Log::Write(Log::Level::Warning,
-               Fmt("Tensor %s mapped to MAT but had 1 dimension; promoting shape to 1x%d to satisfy MAT requirements",
-                   binding.name.c_str(), binding.attr.dimensions.back()));
-  }
-
-  if (warnedFloat16) {
-    Log::Write(Log::Level::Warning,
-               Fmt("Tensor %s uses QNN float16; mapping to FLOAT32 for SpatialML tensor", binding.name.c_str()));
-  }
-
-  Log::Write(Log::Level::Info,
-             Fmt("Tensor %s | qnn dims=%s type=%s -> attr dims=%s channels=%d type=%d",
-                 binding.name.c_str(), JoinInts(binding.qnnDims).c_str(), binding.qnnType.c_str(),
-                 JoinInts(binding.attr.dimensions).c_str(), binding.attr.channels, binding.attr.dataType));
-
-  return binding;
-}
-
-bool ParseBindings(const Json& graphInfo, const char* key, std::vector<TensorBinding>& outBindings) {
-  auto tensorsIt = graphInfo.find(key);
-  if (tensorsIt == graphInfo.end() || !tensorsIt->is_array()) {
-    Log::Write(Log::Level::Error, Fmt("Model JSON missing %s array", key));
-    return false;
-  }
-
-  for (const auto& entry : *tensorsIt) {
-    if (!entry.is_object()) {
-      continue;
-    }
-    auto infoIt = entry.find("info");
-    if (infoIt == entry.end()) {
-      continue;
-    }
-    auto binding = BuildBinding(*infoIt);
-    if (binding.has_value()) {
-      outBindings.emplace_back(std::move(*binding));
-    }
-  }
-  if (outBindings.empty()) {
-    Log::Write(Log::Level::Error, Fmt("No valid %s entries found", key));
-    return false;
-  }
-  return true;
-}
-
 std::string JoinAssetPath(const std::string& root, const std::string& relativePath) {
+  const std::string normalized = NormalizePackageRelativePath(relativePath, "package asset path");
   if (root.empty()) {
-    return relativePath;
-  }
-  if (relativePath.empty()) {
-    return root;
+    return normalized;
   }
   if (root.back() == '/') {
-    return root + relativePath;
+    return root + normalized;
   }
-  return root + "/" + relativePath;
+  return root + "/" + normalized;
 }
 
 std::filesystem::path JoinFilePath(const std::filesystem::path& root, const std::string& relativePath) {
-  std::filesystem::path path(relativePath);
-  if (path.is_absolute()) {
-    return path;
+  const std::string normalized = NormalizePackageRelativePath(relativePath, "package path");
+  const std::filesystem::path resolved = (root / std::filesystem::path(normalized)).lexically_normal();
+  const std::filesystem::path normalizedRoot = root.lexically_normal();
+  auto rootIt = normalizedRoot.begin();
+  auto resolvedIt = resolved.begin();
+  for (; rootIt != normalizedRoot.end() && resolvedIt != resolved.end(); ++rootIt, ++resolvedIt) {
+    if (*rootIt != *resolvedIt) {
+      throw std::runtime_error("package path escapes package root");
+    }
   }
-  return root / path;
+  if (rootIt != normalizedRoot.end()) {
+    throw std::runtime_error("package path escapes package root");
+  }
+  return resolved;
 }
 
 std::string ReadStringValue(const Json& object, const std::vector<std::string>& path) {
@@ -236,21 +103,60 @@ struct ManifestPipelineSpec {
   std::string path;
 };
 
+void ValidatePackagePipelinePaths(const Json& pipelineJson) {
+  const auto tensorsIt = pipelineJson.find("tensors");
+  if (tensorsIt != pipelineJson.end() && tensorsIt->is_object()) {
+    for (const auto& item : tensorsIt->items()) {
+      if (!item.value().is_object() || !item.value().contains("asset")) {
+        continue;
+      }
+      if (!item.value()["asset"].is_string()) {
+        throw std::runtime_error(Fmt("tensor '%s' asset must be a string", item.key().c_str()));
+      }
+      NormalizePackageRelativePath(item.value()["asset"].get<std::string>(), "tensor asset");
+    }
+  }
+
+  const auto operatorsIt = pipelineJson.find("operators");
+  if (operatorsIt != pipelineJson.end() && operatorsIt->is_array()) {
+    for (size_t index = 0; index < operatorsIt->size(); ++index) {
+      const auto& op = (*operatorsIt)[index];
+      if (!op.is_object() || !op.contains("model")) {
+        continue;
+      }
+      const auto modelIt = op.find("model");
+      if (!modelIt->is_object() || !modelIt->contains("bin_path") ||
+          !(*modelIt)["bin_path"].is_string()) {
+        throw std::runtime_error(Fmt("operator #%zu model.bin_path must be a string", index));
+      }
+      NormalizePackageRelativePath((*modelIt)["bin_path"].get<std::string>(),
+                                  "run_algorithm model.bin_path");
+    }
+  }
+}
+
 std::vector<ManifestPipelineSpec> ReadManifestPipelineSpecs(const Json& manifest) {
   std::vector<ManifestPipelineSpec> specs;
   if (auto pipelinesIt = manifest.find("pipelines"); pipelinesIt != manifest.end() && pipelinesIt->is_array()) {
     for (size_t idx = 0; idx < pipelinesIt->size(); ++idx) {
       const auto& pipelineSpec = (*pipelinesIt)[idx];
       if (!pipelineSpec.is_object()) {
-        continue;
+        throw std::runtime_error(Fmt("manifest pipelines[%zu] must be an object", idx));
       }
       ManifestPipelineSpec spec;
-      spec.id = pipelineSpec.value("id", Fmt("pipeline_%zu", idx));
-      spec.path = pipelineSpec.value("path", "");
-      if (!spec.path.empty()) {
-        specs.emplace_back(std::move(spec));
+      if (!pipelineSpec.contains("id") || !pipelineSpec["id"].is_string() ||
+          pipelineSpec["id"].get<std::string>().empty()) {
+        throw std::runtime_error(Fmt("manifest pipelines[%zu].id must be a non-empty string", idx));
       }
+      if (!pipelineSpec.contains("path") || !pipelineSpec["path"].is_string()) {
+        throw std::runtime_error(Fmt("manifest pipelines[%zu].path must be a string", idx));
+      }
+      spec.id = pipelineSpec["id"].get<std::string>();
+      spec.path = NormalizePackageRelativePath(pipelineSpec["path"].get<std::string>(), "manifest pipeline path");
+      specs.emplace_back(std::move(spec));
     }
+  } else {
+    throw std::runtime_error("manifest pipelines must be an array");
   }
 
   return specs;
@@ -334,15 +240,6 @@ bool ValidateTensorAttributeMatch(const std::string& tensorName, const std::stri
   return true;
 }
 
-std::string SanitizeModelName(std::string modelName) {
-  for (char& ch : modelName) {
-    if (ch == '-' || ch == '.' || ch == ' ') {
-      ch = '_';
-    }
-  }
-  return modelName;
-}
-
 void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot) {
   auto operatorsIt = pipelineJson.find("operators");
   if (operatorsIt == pipelineJson.end() || !operatorsIt->is_array()) {
@@ -360,22 +257,7 @@ void PatchModelOperators(Json& pipelineJson, const std::string& packageAssetRoot
     if (modelPath.empty()) {
       throw std::runtime_error("run_algorithm requires inline model.bin_path");
     }
-    opSpec["model_asset"] = JoinAssetPath(packageAssetRoot, modelPath);
-
-    std::string modelName = ReadModelValue(opSpec, "model_name");
-    if (modelName.empty()) {
-      throw std::runtime_error("run_algorithm requires inline model.model_name");
-    }
-    opSpec["model_name"] = SanitizeModelName(modelName);
-
-    std::string modelType = ReadModelValue(opSpec, "model_type");
-    if (!modelType.empty()) {
-      opSpec["model_type"] = modelType;
-    }
-    std::string modelTarget = ReadModelValue(opSpec, "model_target");
-    if (!modelTarget.empty()) {
-      opSpec["model_target"] = modelTarget;
-    }
+    (*opSpec.find("model"))["bin_path"] = JoinAssetPath(packageAssetRoot, modelPath);
   }
 }
 
@@ -397,22 +279,7 @@ void PatchModelOperatorsForFiles(Json& pipelineJson, const std::filesystem::path
     if (modelPath.empty()) {
       throw std::runtime_error("run_algorithm requires inline model.bin_path");
     }
-    opSpec["model_file"] = JoinFilePath(packageRoot, modelPath).string();
-
-    std::string modelName = ReadModelValue(opSpec, "model_name");
-    if (modelName.empty()) {
-      throw std::runtime_error("run_algorithm requires inline model.model_name");
-    }
-    opSpec["model_name"] = SanitizeModelName(modelName);
-
-    std::string modelType = ReadModelValue(opSpec, "model_type");
-    if (!modelType.empty()) {
-      opSpec["model_type"] = modelType;
-    }
-    std::string modelTarget = ReadModelValue(opSpec, "model_target");
-    if (!modelTarget.empty()) {
-      opSpec["model_target"] = modelTarget;
-    }
+    (*opSpec.find("model"))["bin_path"] = JoinFilePath(packageRoot, modelPath).string();
   }
 }
 
@@ -437,9 +304,6 @@ void ResolvePackageAssetPaths(Json& pipelineJson, const std::string& packageAsse
     }
 
     const std::string assetPath = assetIt->get<std::string>();
-    if (assetPath.empty() || assetPath == packageAssetRoot || assetPath.rfind(packageAssetRoot + "/", 0) == 0) {
-      continue;
-    }
     spec["asset"] = JoinAssetPath(packageAssetRoot, assetPath);
   }
 }
@@ -461,9 +325,6 @@ void ResolvePackageFileAssetPaths(Json& pipelineJson, const std::filesystem::pat
     }
 
     const std::string assetPath = assetIt->get<std::string>();
-    if (assetPath.empty()) {
-      continue;
-    }
     spec["asset"] = JoinFilePath(packageRoot, assetPath).string();
   }
 }
@@ -668,15 +529,6 @@ size_t SecureMrUtils::ElementCount(const TensorAttribute& attr) {
   return count;
 }
 
-std::optional<Json> SecureMrUtils::LoadModelJson(const std::filesystem::path& jsonPath) {
-  try {
-    return LoadJsonFromFile(jsonPath);
-  } catch (const std::exception& e) {
-    Log::Write(Log::Level::Error, Fmt("Failed to read %s: %s", jsonPath.string().c_str(), e.what()));
-    return std::nullopt;
-  }
-}
-
 bool SecureMrUtils::LoadAssetToBuffer(const std::string& assetPath, std::vector<char>& out, std::string* outError) {
   out.clear();
   if (assetPath.empty()) {
@@ -751,42 +603,6 @@ std::optional<Json> SecureMrUtils::LoadJsonAsset(const std::string& assetPath, s
   }
 }
 
-bool SecureMrUtils::PrepareBindings(const Json& jsonSpec,
-                                    std::vector<TensorBinding>& inputBindings,
-                                    std::vector<TensorBinding>& outputBindings,
-                                    std::string& modelName) {
-  inputBindings.clear();
-  outputBindings.clear();
-
-  auto infoIt = jsonSpec.find("info");
-  if (infoIt == jsonSpec.end() || !infoIt->is_object()) {
-    Log::Write(Log::Level::Error, "ModelInspect: model JSON missing top-level info");
-    return false;
-  }
-  auto graphsIt = infoIt->find("graphs");
-  if (graphsIt == infoIt->end() || !graphsIt->is_array() || graphsIt->empty()) {
-    Log::Write(Log::Level::Error, "ModelInspect: model JSON missing graphs array");
-    return false;
-  }
-  const auto& graph = (*graphsIt)[0];
-  auto graphInfoIt = graph.find("info");
-  if (graphInfoIt == graph.end() || !graphInfoIt->is_object()) {
-    Log::Write(Log::Level::Error, "ModelInspect: model JSON graph missing info");
-    return false;
-  }
-  if (auto nameIt = graphInfoIt->find("graphName"); nameIt != graphInfoIt->end() && nameIt->is_string()) {
-    modelName = nameIt->get<std::string>();
-  }
-
-  if (!ParseBindings(*graphInfoIt, "graphInputs", inputBindings)) {
-    return false;
-  }
-  if (!ParseBindings(*graphInfoIt, "graphOutputs", outputBindings)) {
-    return false;
-  }
-  return true;
-}
-
 bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     const std::string& packageAssetRoot, const std::shared_ptr<FrameworkSession>& session,
     const std::unordered_map<std::string, std::shared_ptr<GlobalTensor>>& externalGlobals,
@@ -814,7 +630,13 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
   }
   outBundle.detectionTensor = ReadStringValue(outBundle.manifest, {"runtime", "detection_tensor"});
 
-  const auto pipelineSpecs = ReadManifestPipelineSpecs(outBundle.manifest);
+  std::vector<ManifestPipelineSpec> pipelineSpecs;
+  try {
+    pipelineSpecs = ReadManifestPipelineSpecs(outBundle.manifest);
+  } catch (const std::exception& e) {
+    outError = e.what();
+    return false;
+  }
   if (pipelineSpecs.empty()) {
     outError = "model package manifest missing pipelines";
     return false;
@@ -871,6 +693,12 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
       return false;
     }
     try {
+      ValidatePackagePipelinePaths(*pipelineJson);
+    } catch (const std::exception& e) {
+      outError = Fmt("invalid package paths in pipeline '%s': %s", spec.id.c_str(), e.what());
+      return false;
+    }
+    try {
       PatchModelOperators(*pipelineJson, packageAssetRoot);
     } catch (const std::exception& e) {
       outError = e.what();
@@ -879,7 +707,7 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     ResolvePackageAssetPaths(*pipelineJson, packageAssetRoot);
 
     PipelineDeserializationResult deserializeResult;
-    if (!DeserializePipelineFromJson(*pipelineJson, session, deserializeResult, outError, options.deserializationOptions)) {
+    if (!DeserializePipelineFromJson(*pipelineJson, session, deserializeResult, outError)) {
       outError = Fmt("failed to deserialize pipeline '%s': %s", spec.id.c_str(), outError.c_str());
       return false;
     }
@@ -910,6 +738,17 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromAssets(
     if (!package.detectionTensor.empty() && package.tensorMap.find(package.detectionTensor) != package.tensorMap.end() &&
         !ensureSharedBinding(spec.id, package, package.detectionTensor)) {
       return false;
+    }
+    for (const auto& [tensorName, tensorSpec] : package.pipelineJson["tensors"].items()) {
+      if (!tensorSpec.is_object() || !tensorSpec.value("is_placeholder", false)) {
+        continue;
+      }
+      const auto pipelineTensor = FindPackageTensor(package, tensorName);
+      if (pipelineTensor == nullptr || package.submitBindings.find(pipelineTensor) == package.submitBindings.end()) {
+        if (!ensureSharedBinding(spec.id, package, tensorName)) {
+          return false;
+        }
+      }
     }
 
     outBundle.pipelines.emplace(spec.id, std::move(package));
@@ -946,7 +785,13 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
   }
   outBundle.detectionTensor = ReadStringValue(outBundle.manifest, {"runtime", "detection_tensor"});
 
-  const auto pipelineSpecs = ReadManifestPipelineSpecs(outBundle.manifest);
+  std::vector<ManifestPipelineSpec> pipelineSpecs;
+  try {
+    pipelineSpecs = ReadManifestPipelineSpecs(outBundle.manifest);
+  } catch (const std::exception& e) {
+    outError = e.what();
+    return false;
+  }
   if (pipelineSpecs.empty()) {
     outError = "model package manifest missing pipelines";
     return false;
@@ -1005,6 +850,12 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
       outError = e.what();
       return false;
     }
+    try {
+      ValidatePackagePipelinePaths(pipelineJson);
+    } catch (const std::exception& e) {
+      outError = Fmt("invalid package paths in pipeline '%s': %s", spec.id.c_str(), e.what());
+      return false;
+    }
 
     try {
       PatchModelOperatorsForFiles(pipelineJson, packageRoot);
@@ -1014,11 +865,11 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
     }
     ResolvePackageFileAssetPaths(pipelineJson, packageRoot);
     if (options.stripRectifiedVstAccess) {
-      RemoveOperatorsByType(pipelineJson, {"rectified_vst_access", "camera_access"}, true);
+      RemoveOperatorsByType(pipelineJson, {"camera_access"}, true);
     }
 
     PipelineDeserializationResult deserializeResult;
-    if (!DeserializePipelineFromJson(pipelineJson, session, deserializeResult, outError, options.deserializationOptions)) {
+    if (!DeserializePipelineFromJson(pipelineJson, session, deserializeResult, outError)) {
       outError = Fmt("failed to deserialize pipeline '%s': %s", spec.id.c_str(), outError.c_str());
       return false;
     }
@@ -1049,6 +900,18 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
     if (!package.detectionTensor.empty() && package.tensorMap.find(package.detectionTensor) != package.tensorMap.end() &&
         !ensureSharedBinding(spec.id, package, package.detectionTensor)) {
       return false;
+    }
+
+    for (const auto& [tensorName, tensorSpec] : package.pipelineJson["tensors"].items()) {
+      if (!tensorSpec.is_object() || !tensorSpec.value("is_placeholder", false)) {
+        continue;
+      }
+      const auto pipelineTensor = FindPackageTensor(package, tensorName);
+      if (pipelineTensor == nullptr || package.submitBindings.find(pipelineTensor) == package.submitBindings.end()) {
+        if (!ensureSharedBinding(spec.id, package, tensorName)) {
+          return false;
+        }
+      }
     }
 
     outBundle.pipelines.emplace(spec.id, std::move(package));

@@ -14,7 +14,6 @@ Examples:
   ./scripts/run_model_inspect.sh --model assets/mnistwild/mnist.serialized.bin --json assets/mnistwild/mnist.serialized.json
   ./scripts/run_model_inspect.sh --model assets/pose/detection.serialized.bin --json assets/pose/detection.serialized.json
   ./scripts/run_model_inspect.sh --model assets/pose/landmark.serialized.bin --json assets/pose/landmark.serialized.json
-  ./scripts/run_model_inspect.sh --model assets/UFO/facedetector_fp16_qnn229.bin --json assets/UFO/facedetector_fp16_qnn229.json
   ./scripts/run_model_inspect.sh --model assets/yolo_det/yolo.serialized.bin --json assets/yolo_det/yolo.serialized.json
   ./scripts/run_model_inspect.sh --model assets/yolo_det/yolom.serialized.bin --json assets/yolo_det/yolom.serialized.json
 EOF

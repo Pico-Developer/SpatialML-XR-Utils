@@ -28,14 +28,6 @@
 
 namespace SecureMR {
 
-struct TensorBinding {
-  std::string name;
-  std::vector<int> qnnDims;
-  std::string qnnType;
-  TensorAttribute attr{};
-  std::shared_ptr<GlobalTensor> global;
-};
-
 struct ModelPackagePipeline {
   Json manifest;
   Json pipelineJson;
@@ -57,20 +49,14 @@ struct ModelPackagePipelineBundle {
 
 struct ModelPackageLoadOptions {
   bool stripRectifiedVstAccess = false;
-  PipelineDeserializationOptions deserializationOptions;
 };
 
 class SecureMrUtils {
  public:
   static size_t BytesPerElement(XrSecureMrTensorDataTypePICO dataType);
   static size_t ElementCount(const TensorAttribute& attr);
-  static std::optional<Json> LoadModelJson(const std::filesystem::path& jsonPath);
   static bool LoadAssetToBuffer(const std::string& assetPath, std::vector<char>& out, std::string* outError = nullptr);
   static std::optional<Json> LoadJsonAsset(const std::string& assetPath, std::string* outError = nullptr);
-  static bool PrepareBindings(const Json& jsonSpec,
-                              std::vector<TensorBinding>& inputBindings,
-                              std::vector<TensorBinding>& outputBindings,
-                              std::string& modelName);
   static bool LoadModelPackagePipelinesFromAssets(
       const std::string& packageAssetRoot,
       const std::shared_ptr<FrameworkSession>& session,

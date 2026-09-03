@@ -13427,7 +13427,6 @@ typedef enum XrSecureMrModelEncodingPICO {
 } XrSecureMrModelEncodingPICO;
 
 typedef enum XrSecureMrModelTypePICO {
-    XR_SECURE_MR_MODEL_TYPE_QNN_CONTEXT_BINARY_PICO = 1,
     XR_SECURE_MR_MODEL_TYPE_LITE_RT_MODEL_PICO = 2,
     XR_SECURE_MR_MODEL_TYPE_MAX_ENUM_PICO = 0x7FFFFFFF
 } XrSecureMrModelTypePICO;
