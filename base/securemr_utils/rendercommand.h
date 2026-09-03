@@ -124,7 +124,7 @@ struct RenderCommand {
           } else if constexpr (std::is_same_v<T, std::string>) {
             opTensor = std::make_shared<PipelineTensor>(
                 gltfTensor->getPipeline(), TensorAttribute{.dimensions = {static_cast<int>(arg.size())},
-                                                           .channels = 2,
+                                                           .channels = 1,
                                                            .usage = XR_SECURE_MR_TENSOR_TYPE_SCALAR_PICO,
                                                            .dataType = XR_SECURE_MR_TENSOR_DATA_TYPE_INT8_PICO});
             opTensor->setData(reinterpret_cast<int8_t*>(arg.data()), arg.size());

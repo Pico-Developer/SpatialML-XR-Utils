@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <stdexcept>
+#include <variant>
+
+#include "pipeline.h"
+#include "model_io.h"
 #include "rendercommand.h"
 #include "tensor.h"
-#include "pipeline.h"
-
-#include <variant>
 
 namespace SecureMR {
 Pipeline::Pipeline(std::shared_ptr<FrameworkSession> root) : m_rootSession(std::move(root)) {
@@ -183,11 +186,13 @@ Pipeline& Pipeline::arithmetic(const std::string& expression, const std::vector<
       .operatorType = XR_SECURE_MR_OPERATOR_TYPE_ARITHMETIC_COMPOSE_PICO,
   };
   CHECK_XRCMD(xrCreateSecureMrOperatorPICO(m_handle, &operatorCreateInfo, &opHandle))
-  int operandIndex = 0;
-  for (auto& operand : ops) {
+  for (size_t operandIndex = 0; operandIndex < ops.size(); ++operandIndex) {
+    const auto& operand = ops[operandIndex];
+    if (operand == nullptr) {
+      continue;
+    }
     xrSetSecureMrOperatorOperandByIndexPICO(m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*operand),
-                                            operandIndex);
-    operandIndex++;
+                                            static_cast<uint32_t>(operandIndex));
   }
   xrSetSecureMrOperatorResultByNamePICO(m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*result),
                                         "result");
@@ -421,7 +426,8 @@ Pipeline& Pipeline::uv2Cam(const std::shared_ptr<PipelineTensor>& uv, const std:
 }
 
 Pipeline& Pipeline::normalize(const std::shared_ptr<PipelineTensor>& src, const std::shared_ptr<PipelineTensor>& result,
-                              const Pipeline::NormalizeType type) {
+                              const Pipeline::NormalizeType type,
+                              const std::shared_ptr<PipelineTensor>& alphaBeta) {
   XrSecureMrOperatorPICO opHandle = XR_NULL_HANDLE;
   XrSecureMrOperatorNormalizePICO normalizeConfig{.type = XR_TYPE_SECURE_MR_OPERATOR_NORMALIZE_PICO,
                                                   .normalizeType = static_cast<XrSecureMrNormalizeTypePICO>(type)};
@@ -433,6 +439,10 @@ Pipeline& Pipeline::normalize(const std::shared_ptr<PipelineTensor>& src, const 
   CHECK_XRCMD(xrCreateSecureMrOperatorPICO(m_handle, &operatorCreateInfo, &opHandle))
   CHECK_XRCMD(
       xrSetSecureMrOperatorOperandByNamePICO(m_handle, opHandle, (XrSecureMrPipelineTensorPICO)*src, "operand0"))
+  if (alphaBeta != nullptr) {
+    CHECK_XRCMD(xrSetSecureMrOperatorOperandByIndexPICO(
+        m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*alphaBeta), 1))
+  }
   CHECK_XRCMD(
       xrSetSecureMrOperatorResultByNamePICO(m_handle, opHandle, (XrSecureMrPipelineTensorPICO)*result, "result"))
   return *this;
@@ -853,9 +863,9 @@ static std::vector<XrSecureMrOperatorIOMapPICO> prepareIoMap(
         .encodingType = ecd,
     });
     auto aliasLookup = aliasing.find(tensorPair.first);
-    std::strcpy(ioMaps.back().nodeName,
-                aliasLookup == aliasing.end() ? tensorPair.first.c_str() : aliasLookup->second.c_str());
-    std::strcpy(ioMaps.back().operatorIOName, tensorPair.first.c_str());
+    CopyOperatorIoName(ioMaps.back().nodeName,
+                       aliasLookup == aliasing.end() ? tensorPair.first : aliasLookup->second, "model node name");
+    CopyOperatorIoName(ioMaps.back().operatorIOName, tensorPair.first, "model operator I/O name");
   }
   return ioMaps;
 }

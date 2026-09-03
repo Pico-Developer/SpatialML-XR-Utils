@@ -354,7 +354,8 @@ class Pipeline final : public XrHandleAdapter<XrSecureMrPipelinePICO>, public st
    * @return Reference to this pipeline
    */
   Pipeline& normalize(const std::shared_ptr<PipelineTensor>& src, const std::shared_ptr<PipelineTensor>& result,
-                      NormalizeType type = NormalizeType::L2);
+                      NormalizeType type = NormalizeType::L2,
+                      const std::shared_ptr<PipelineTensor>& alphaBeta = nullptr);
   /**
    * Add to the pipeline an operator to query the transform matrix for left/right-eye camera to
    * OpenXR's <code>XR_REFERENCE_SPACE_TYPE_LOCAL</code> at the time when the image is taken
@@ -632,7 +633,7 @@ class Pipeline final : public XrHandleAdapter<XrSecureMrPipelinePICO>, public st
                          const std::unordered_map<std::string, std::shared_ptr<PipelineTensor>>& algResults,
                          const std::unordered_map<std::string, std::string>& resultAliasing,
                          const std::string& modelName,
-                         XrSecureMrModelTypePICO modelType = XR_SECURE_MR_MODEL_TYPE_QNN_CONTEXT_BINARY_PICO,
+                         XrSecureMrModelTypePICO modelType = XR_SECURE_MR_MODEL_TYPE_LITE_RT_MODEL_PICO,
                          XrSecureMrModelTargetPICO modelTarget = XR_SECURE_MR_MODEL_TARGET_NPU_PICO,
                          int32_t cpuTargetNumThreads = 1);
 

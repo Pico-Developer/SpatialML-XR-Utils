@@ -17,7 +17,6 @@
 
 #include <array>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -50,6 +49,8 @@ std::vector<std::string> ParseTensorList(const Json& arr);
 std::vector<std::pair<std::string, std::string>> ParseMappedTensorList(const Json& arr);
 bool JsonToFloatArray(const Json& arr, std::array<float, 6>& dest);
 Json LoadJsonFromFile(const std::filesystem::path& filePath);
+// Validate and normalize a path stored in a schema-v2 package.
+std::string NormalizePackageRelativePath(const std::string& value, const char* what);
 std::string FormatOperatorType(const std::string& typeName);
 
 struct PipelineDeserializationResult {
@@ -57,19 +58,10 @@ struct PipelineDeserializationResult {
   std::unordered_map<std::string, std::shared_ptr<PipelineTensor>> tensorMap;
 };
 
-struct PipelineDeserializationOptions {
-  std::function<bool(const Json& opSpec,
-                     const std::function<std::shared_ptr<PipelineTensor>(const std::string&)>& requireTensor,
-                     const std::shared_ptr<Pipeline>& pipeline,
-                     std::string& error)>
-      customOperatorHandler;
-};
-
 bool DeserializePipelineFromJson(const Json& spec,
                                  const std::shared_ptr<FrameworkSession>& session,
                                  PipelineDeserializationResult& outResult,
-                                 std::string& outError,
-                                 const PipelineDeserializationOptions& options = {});
+                                 std::string& outError);
 
 }  // namespace SecureMR
 
