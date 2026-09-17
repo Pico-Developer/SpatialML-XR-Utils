@@ -1438,6 +1438,47 @@ std::string FormatOperatorType(const std::string& typeName) {
   throw std::runtime_error(Fmt("operator type '%s' is not a supported canonical package operator", typeName.c_str()));
 }
 
+void RemoveOperatorsAndPromoteOutputsToInputs(
+    Json& pipelineJson, const std::unordered_set<std::string>& operatorTypes) {
+  auto operatorsIt = pipelineJson.find("operators");
+  if (operatorsIt == pipelineJson.end() || !operatorsIt->is_array()) {
+    return;
+  }
+
+  Json kept = Json::array();
+  for (const auto& opSpec : *operatorsIt) {
+    if (!opSpec.is_object() ||
+        operatorTypes.find(FormatOperatorType(opSpec.value("type", ""))) == operatorTypes.end()) {
+      kept.push_back(opSpec);
+      continue;
+    }
+
+    Json& inputs = pipelineJson["inputs"];
+    if (!inputs.is_array()) {
+      inputs = Json::array();
+    }
+    for (const auto& outputName : ParseTensorList(opSpec.value("outputs", Json::array()))) {
+      const bool alreadyInput = std::any_of(inputs.begin(), inputs.end(), [&](const Json& existing) {
+        return existing.is_string() && existing.get<std::string>() == outputName;
+      });
+      if (!alreadyInput) {
+        inputs.push_back(outputName);
+      }
+
+      auto tensorsIt = pipelineJson.find("tensors");
+      if (tensorsIt == pipelineJson.end() || !tensorsIt->is_object()) {
+        throw std::runtime_error("cannot promote operator output without a tensors object");
+      }
+      auto tensorIt = tensorsIt->find(outputName);
+      if (tensorIt == tensorsIt->end() || !tensorIt->is_object()) {
+        throw std::runtime_error(Fmt("cannot promote unknown operator output '%s'", outputName.c_str()));
+      }
+      (*tensorIt)["is_placeholder"] = true;
+    }
+  }
+  *operatorsIt = std::move(kept);
+}
+
 bool DeserializePipelineFromJson(const Json& spec,
                                  const std::shared_ptr<FrameworkSession>& session,
                                  PipelineDeserializationResult& outResult,
@@ -1985,16 +2026,16 @@ bool DeserializePipelineFromJson(const Json& spec,
           throw std::runtime_error("run_algorithm inputs/outputs malformed");
         }
 
-        std::unordered_map<std::string, std::shared_ptr<PipelineTensor>> inputMap;
+        std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>> inputBindings;
         std::unordered_map<std::string, std::string> operandAliasing;
         for (const auto& binding : NormalizeModelBindings(mappedInputs)) {
-          inputMap.emplace(binding.operatorName, requireTensor(binding.tensorName));
+          inputBindings.emplace_back(binding.operatorName, requireTensor(binding.tensorName));
           operandAliasing.emplace(binding.operatorName, binding.modelNodeName);
         }
-        std::unordered_map<std::string, std::shared_ptr<PipelineTensor>> outputMap;
+        std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>> outputBindings;
         std::unordered_map<std::string, std::string> resultAliasing;
         for (const auto& binding : NormalizeModelBindings(mappedOutputs)) {
-          outputMap.emplace(binding.operatorName, requireTensor(binding.tensorName));
+          outputBindings.emplace_back(binding.operatorName, requireTensor(binding.tensorName));
           resultAliasing.emplace(binding.operatorName, binding.modelNodeName);
         }
 
@@ -2060,8 +2101,9 @@ bool DeserializePipelineFromJson(const Json& spec,
         const XrSecureMrModelTypePICO modelType = ParseModelType(modelValue("model_type", "tflite"));
         const XrSecureMrModelTargetPICO modelTarget = ParseModelTarget(modelValue("model_target", "npu"));
         const int32_t cpuTargetNumThreads = model != nullptr ? model->value("cpu_target_num_threads", 1) : 1;
-        pipeline->runAlgorithm(modelBuffer.data(), modelBuffer.size(), inputMap, operandAliasing, outputMap,
-                               resultAliasing, modelName, modelType, modelTarget, cpuTargetNumThreads);
+        pipeline->runAlgorithmOrdered(modelBuffer.data(), modelBuffer.size(), inputBindings, operandAliasing,
+                                      outputBindings, resultAliasing, modelName, modelType, modelTarget,
+                                      cpuTargetNumThreads);
       } else if (type == "javascript") {
         ValidateAttrCount(opSpec, 1, 1, "javascript");
         auto mappedInputs = mappedSlots(inputs, "javascript inputs");
