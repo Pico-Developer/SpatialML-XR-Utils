@@ -20,7 +20,6 @@
 #include <exception>
 #include <limits>
 #include <sstream>
-#include <unordered_set>
 #include <utility>
 
 #include "common.h"
@@ -327,46 +326,6 @@ void ResolvePackageFileAssetPaths(Json& pipelineJson, const std::filesystem::pat
     const std::string assetPath = assetIt->get<std::string>();
     spec["asset"] = JoinFilePath(packageRoot, assetPath).string();
   }
-}
-
-void AppendUniqueTensorName(Json& names, const std::string& tensorName) {
-  if (tensorName.empty()) {
-    return;
-  }
-  if (!names.is_array()) {
-    names = Json::array();
-  }
-  for (const auto& existing : names) {
-    if (existing.is_string() && existing.get<std::string>() == tensorName) {
-      return;
-    }
-  }
-  names.push_back(tensorName);
-}
-
-void RemoveOperatorsByType(Json& pipelineJson, const std::unordered_set<std::string>& types,
-                           const bool promoteRemovedOutputsToInputs = false) {
-  auto operatorsIt = pipelineJson.find("operators");
-  if (operatorsIt == pipelineJson.end() || !operatorsIt->is_array()) {
-    return;
-  }
-  Json kept = Json::array();
-  for (const auto& opSpec : *operatorsIt) {
-    if (!opSpec.is_object()) {
-      kept.push_back(opSpec);
-      continue;
-    }
-    const std::string type = FormatOperatorType(opSpec.value("type", ""));
-    if (types.find(type) == types.end()) {
-      kept.push_back(opSpec);
-    } else if (promoteRemovedOutputsToInputs) {
-      Json& inputs = pipelineJson["inputs"];
-      for (const auto& outputName : ParseTensorList(opSpec.value("outputs", Json::array()))) {
-        AppendUniqueTensorName(inputs, outputName);
-      }
-    }
-  }
-  *operatorsIt = std::move(kept);
 }
 
 std::shared_ptr<PipelineTensor> FindPackageTensor(const ModelPackagePipeline& package, const std::string& tensorName) {
@@ -865,7 +824,7 @@ bool SecureMrUtils::LoadModelPackagePipelinesFromFiles(
     }
     ResolvePackageFileAssetPaths(pipelineJson, packageRoot);
     if (options.stripRectifiedVstAccess) {
-      RemoveOperatorsByType(pipelineJson, {"camera_access"}, true);
+      RemoveOperatorsAndPromoteOutputsToInputs(pipelineJson, {"camera_access"});
     }
 
     PipelineDeserializationResult deserializeResult;

@@ -22,6 +22,17 @@
 #include "tensor.h"
 
 namespace SecureMR {
+namespace {
+
+XrResult CheckSecureMrResult(XrResult result, const char* operation) {
+  if (result != XR_SUCCESS) {
+    Throw(Fmt("SecureMR call returned result %d", static_cast<int>(result)), operation, FILE_AND_LINE);
+  }
+  return result;
+}
+
+}  // namespace
+
 Pipeline::Pipeline(std::shared_ptr<FrameworkSession> root) : m_rootSession(std::move(root)) {
   if (m_rootSession) {
     Log::Write(Log::Level::Info, "Attempting to get xrCreateSecureMrPipelinePICO");
@@ -41,6 +52,9 @@ Pipeline::Pipeline(std::shared_ptr<FrameworkSession> root) : m_rootSession(std::
     xrSetSecureMrOperatorResultByNamePICO =
         m_rootSession->getAPIFromXrInstance<PFN_xrSetSecureMrOperatorResultByNamePICO>(
             "xrSetSecureMrOperatorResultByNamePICO");
+    xrSetSecureMrOperatorResultByIndexPICO =
+        m_rootSession->getAPIFromXrInstance<PFN_xrSetSecureMrOperatorResultByIndexPICO>(
+            "xrSetSecureMrOperatorResultByIndexPICO");
     xrExecuteSecureMrPipelinePICO =
         m_rootSession->getAPIFromXrInstance<PFN_xrExecuteSecureMrPipelinePICO>("xrExecuteSecureMrPipelinePICO");
   }
@@ -50,6 +64,7 @@ Pipeline::Pipeline(std::shared_ptr<FrameworkSession> root) : m_rootSession(std::
   CHECK_MSG(xrSetSecureMrOperatorOperandByNamePICO != nullptr, "xrSetSecureMrOperatorOperandByNamePICO failed");
   CHECK_MSG(xrSetSecureMrOperatorOperandByIndexPICO != nullptr, "xrSetSecureMrOperatorOperandByIndexPICO failed");
   CHECK_MSG(xrSetSecureMrOperatorResultByNamePICO != nullptr, "xrSetSecureMrOperatorResultByNamePICO failed");
+  CHECK_MSG(xrSetSecureMrOperatorResultByIndexPICO != nullptr, "xrSetSecureMrOperatorResultByIndexPICO failed");
   CHECK_MSG(xrExecuteSecureMrPipelinePICO != nullptr, "xrExecuteSecureMrPipelinePICO failed");
 
   constexpr XrSecureMrPipelineCreateInfoPICO createInfo = {XR_TYPE_SECURE_MR_PIPELINE_CREATE_INFO_PICO};
@@ -825,8 +840,9 @@ Pipeline& Pipeline::debugRenderText(
   return execRenderCommand(cmd);
 }
 
+template <typename TensorBindings>
 static std::vector<XrSecureMrOperatorIOMapPICO> prepareIoMap(
-    const std::unordered_map<std::string, std::shared_ptr<PipelineTensor>>& tensors,
+    const TensorBindings& tensors,
     const std::unordered_map<std::string, std::string>& aliasing) {
   std::vector<XrSecureMrOperatorIOMapPICO> ioMaps;
 
@@ -906,12 +922,66 @@ Pipeline& Pipeline::runAlgorithm(char* algPackageBuf, size_t algPackageSize,
   };
   CHECK_XRCMD(xrCreateSecureMrOperatorPICO(m_handle, &operatorCreateInfo, &opHandle))
   for (auto& operand : algOps) {
-    xrSetSecureMrOperatorOperandByNamePICO(
-        m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*operand.second), operand.first.c_str());
+    CheckSecureMrResult(
+        xrSetSecureMrOperatorOperandByNamePICO(
+            m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*operand.second), operand.first.c_str()),
+        "xrSetSecureMrOperatorOperandByNamePICO");
   }
   for (auto& result : algResults) {
-    xrSetSecureMrOperatorResultByNamePICO(m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*result.second),
-                                          result.first.c_str());
+    CheckSecureMrResult(
+        xrSetSecureMrOperatorResultByNamePICO(
+            m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*result.second), result.first.c_str()),
+        "xrSetSecureMrOperatorResultByNamePICO");
+  }
+  return *this;
+}
+
+Pipeline& Pipeline::runAlgorithmOrdered(
+    char* algPackageBuf, size_t algPackageSize,
+    const std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>>& algOps,
+    const std::unordered_map<std::string, std::string>& operandAliasing,
+    const std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>>& algResults,
+    const std::unordered_map<std::string, std::string>& resultAliasing, const std::string& modelName,
+    XrSecureMrModelTypePICO modelType, XrSecureMrModelTargetPICO modelTarget, int32_t cpuTargetNumThreads) {
+  XrSecureMrOperatorPICO opHandle = XR_NULL_HANDLE;
+  std::vector<XrSecureMrOperatorIOMapPICO> inputConfigs = prepareIoMap(algOps, operandAliasing);
+  std::vector<XrSecureMrOperatorIOMapPICO> outputConfigs = prepareIoMap(algResults, resultAliasing);
+  XrSecureMrOperatorLiteRtModelPICO liteRtConfig{
+      .type = XR_TYPE_SECURE_MR_OPERATOR_LITE_RT_MODEL_PICO,
+      .modelTarget = modelTarget,
+      .cpuTargetNumThreads = cpuTargetNumThreads,
+  };
+  XrSecureMrOperatorModelPICO algConfig{.type = XR_TYPE_SECURE_MR_OPERATOR_MODEL_PICO,
+                                        .next = modelType == XR_SECURE_MR_MODEL_TYPE_LITE_RT_MODEL_PICO
+                                                    ? reinterpret_cast<const void*>(&liteRtConfig)
+                                                    : nullptr,
+                                        .modelInputCount = static_cast<uint32_t>(inputConfigs.size()),
+                                        .modelInputs = inputConfigs.data(),
+                                        .modelOutputCount = static_cast<uint32_t>(outputConfigs.size()),
+                                        .modelOutputs = outputConfigs.data(),
+                                        .bufferSize = static_cast<uint32_t>(algPackageSize),
+                                        .buffer = algPackageBuf,
+                                        .modelType = modelType,
+                                        .modelName = modelName.c_str()};
+  XrSecureMrOperatorCreateInfoPICO operatorCreateInfo{
+      .type = XR_TYPE_SECURE_MR_OPERATOR_CREATE_INFO_PICO,
+      .operatorInfo = reinterpret_cast<XrSecureMrOperatorBaseHeaderPICO*>(&algConfig),
+      .operatorType = XR_SECURE_MR_OPERATOR_TYPE_RUN_MODEL_INFERENCE_PICO,
+  };
+  CHECK_XRCMD(xrCreateSecureMrOperatorPICO(m_handle, &operatorCreateInfo, &opHandle))
+  for (size_t index = 0; index < algOps.size(); ++index) {
+    CheckSecureMrResult(
+        xrSetSecureMrOperatorOperandByIndexPICO(
+            m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*algOps[index].second),
+            static_cast<int32_t>(index)),
+        "xrSetSecureMrOperatorOperandByIndexPICO");
+  }
+  for (size_t index = 0; index < algResults.size(); ++index) {
+    CheckSecureMrResult(
+        xrSetSecureMrOperatorResultByIndexPICO(
+            m_handle, opHandle, static_cast<XrSecureMrPipelineTensorPICO>(*algResults[index].second),
+            static_cast<int32_t>(index)),
+        "xrSetSecureMrOperatorResultByIndexPICO");
   }
   return *this;
 }
@@ -966,7 +1036,8 @@ XrSecureMrPipelineRunPICO Pipeline::submit(
       .pairCount = static_cast<uint32_t>(pairs.size()),
       .pipelineIOPair = pairs.data()};
   XrSecureMrPipelineRunPICO runHandle;
-  CHECK_XRCMD(xrExecuteSecureMrPipelinePICO(m_handle, &runParam, &runHandle))
+  CheckSecureMrResult(xrExecuteSecureMrPipelinePICO(m_handle, &runParam, &runHandle),
+                      "xrExecuteSecureMrPipelinePICO");
   return runHandle;
 }
 }  // namespace SecureMR

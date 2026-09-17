@@ -53,6 +53,7 @@ class Pipeline final : public XrHandleAdapter<XrSecureMrPipelinePICO>, public st
   PFN_xrSetSecureMrOperatorOperandByNamePICO xrSetSecureMrOperatorOperandByNamePICO = nullptr;
   PFN_xrSetSecureMrOperatorOperandByIndexPICO xrSetSecureMrOperatorOperandByIndexPICO = nullptr;
   PFN_xrSetSecureMrOperatorResultByNamePICO xrSetSecureMrOperatorResultByNamePICO = nullptr;
+  PFN_xrSetSecureMrOperatorResultByIndexPICO xrSetSecureMrOperatorResultByIndexPICO = nullptr;
   PFN_xrCreateSecureMrOperatorPICO xrCreateSecureMrOperatorPICO = nullptr;
   PFN_xrExecuteSecureMrPipelinePICO xrExecuteSecureMrPipelinePICO = nullptr;
 
@@ -636,6 +637,23 @@ class Pipeline final : public XrHandleAdapter<XrSecureMrPipelinePICO>, public st
                          XrSecureMrModelTypePICO modelType = XR_SECURE_MR_MODEL_TYPE_LITE_RT_MODEL_PICO,
                          XrSecureMrModelTargetPICO modelTarget = XR_SECURE_MR_MODEL_TARGET_NPU_PICO,
                          int32_t cpuTargetNumThreads = 1);
+
+  /**
+   * Add a model operator and connect its tensors by their declared model
+   * positions. Package JSON uses ordered input/output arrays, so this avoids
+   * relying on runtime-specific model signature names while preserving the
+   * exact model slot order.
+   */
+  Pipeline& runAlgorithmOrdered(
+      char* algPackageBuf, size_t algPackageSize,
+      const std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>>& algOps,
+      const std::unordered_map<std::string, std::string>& operandAliasing,
+      const std::vector<std::pair<std::string, std::shared_ptr<PipelineTensor>>>& algResults,
+      const std::unordered_map<std::string, std::string>& resultAliasing,
+      const std::string& modelName,
+      XrSecureMrModelTypePICO modelType = XR_SECURE_MR_MODEL_TYPE_LITE_RT_MODEL_PICO,
+      XrSecureMrModelTargetPICO modelTarget = XR_SECURE_MR_MODEL_TARGET_NPU_PICO,
+      int32_t cpuTargetNumThreads = 1);
 
   /**
    * Executes a JavaScript operator inside the pipeline.

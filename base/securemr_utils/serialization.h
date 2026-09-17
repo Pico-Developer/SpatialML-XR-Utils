@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -52,6 +53,8 @@ Json LoadJsonFromFile(const std::filesystem::path& filePath);
 // Validate and normalize a path stored in a schema-v2 package.
 std::string NormalizePackageRelativePath(const std::string& value, const char* what);
 std::string FormatOperatorType(const std::string& typeName);
+void RemoveOperatorsAndPromoteOutputsToInputs(Json& pipelineJson,
+                                              const std::unordered_set<std::string>& operatorTypes);
 
 struct PipelineDeserializationResult {
   std::shared_ptr<Pipeline> pipeline;
