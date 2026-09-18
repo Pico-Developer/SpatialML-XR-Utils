@@ -148,7 +148,7 @@ std::optional<TensorBinding> BuildBinding(const Json& info) {
 
   if (warnedFloat16) {
     Log::Write(Log::Level::Warning,
-               Fmt("Tensor %s uses QNN float16; mapping to FLOAT32 for SecureMR tensor", binding.name.c_str()));
+               Fmt("Tensor %s uses QNN float16; mapping to FLOAT32 for SpatialML tensor", binding.name.c_str()));
   }
 
   Log::Write(Log::Level::Info,

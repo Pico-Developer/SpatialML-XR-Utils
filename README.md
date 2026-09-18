@@ -2,7 +2,7 @@
 
 Reusable NativeActivity/OpenXR base sources for SpatialML XR Android apps.
 
-This repository packages the `SecureMR-Samples-Private/base` C++ app base as a
+This repository packages C++ app base utility code as a
 small Android Studio library project plus a CMake project declaration that
 SpatialML XR samples can use.
 

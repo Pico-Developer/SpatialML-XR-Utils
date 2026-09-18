@@ -56,10 +56,10 @@ set(VULKAN_SHADERS
     ${CMAKE_CURRENT_LIST_DIR}/vulkan_shaders/frag.glsl
     ${CMAKE_CURRENT_LIST_DIR}/vulkan_shaders/vert.glsl
 )
-set(SECUREMR_UTILS_SRCS "")
+set(SPATIALML_UTILS_SRCS "")
 
-if (USE_SECURE_MR_UTILS)
-    list(APPEND SECUREMR_UTILS_SRCS
+if (USE_SPATIALML_UTILS)
+    list(APPEND SPATIALML_UTILS_SRCS
         ${CMAKE_CURRENT_LIST_DIR}/securemr_utils/pipeline.cpp
         ${CMAKE_CURRENT_LIST_DIR}/securemr_utils/rendercommand.cpp
         ${CMAKE_CURRENT_LIST_DIR}/securemr_utils/serialization.cpp
@@ -87,7 +87,7 @@ add_library(
     ${PROJECT_NAME} MODULE
     ${BASE_SRCS}
     ${SAMPLE_SRCS}
-    ${SECUREMR_UTILS_SRCS}
+    ${SPATIALML_UTILS_SRCS}
     ${VULKAN_SHADERS}
     ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
 )
@@ -121,7 +121,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Shader compilation for **client**
-# No shader needed for SecureMR stuff
+# No shader needed for SpatialML stuff
 include("${CMAKE_CURRENT_LIST_DIR}/../scripts/compile_glsl.cmake")
 compile_glsl(run_glsl_compiles ${VULKAN_SHADERS})
 if(GLSLANG_VALIDATOR AND NOT GLSLC_COMMAND)

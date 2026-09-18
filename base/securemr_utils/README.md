@@ -1,12 +1,12 @@
-# Utility classes for SecureMR
+# Utility classes for SpatialML
 
-SecureMR is available via the C-API of the OpenXR extension. 
+SpatialML is available via the C-API of the OpenXR extension.
 However, the C-API might be diffcult to use and the repeated
 codes can easily overflow the essential MR logics. Hence,
 to simplify the major logics in our samples, and also to
-ease the usage of SecureMR, we build these utility classes.
+ease the usage of SpatialML, we build these utility classes.
 
-These SecureMR utility classes are designed for handling tensor
+These SpatialML utility classes are designed for handling tensor
 operations, pipeline execution, and rendering commands in a flexiable
 manner, using smart pointers to automatically manage the lifecycles,
 type casting and templates to ease the intialization and data transferring,
@@ -24,27 +24,27 @@ The utility classes depend only on PICO's OpenXR library.
     - Embeds the `...CreateInfo` structures for the wrapped OpenXR objects to minimize the configuration efforts,
     - Automatically initializes the wrapped OpenXR objects and destroys them during destruction.
 1. Framework Session (`session.h`, `session.cpp`)
-    - Manages the OpenXR session for SecureMR,
-    - Loads OpenXR SecureMR APIs to member function pointers on demand during the run time,
+    - Manages the OpenXR session for SpatialML,
+    - Loads OpenXR SpatialML APIs to member function pointers on demand during the run time,
     - Handles session initialization and cleanup.
 1. Tensor Management (`tensor.h`, `tensor.cpp`)
     - Defines tensor attributes such as dimensions, channels, and data types,
-    - Manages tensor creation and destruction using SecureMR API calls,
+    - Manages tensor creation and destruction using SpatialML API calls,
     - Interacts with the Pipeline to process tensor-based computations.
 1. Render Commands (`rendercommand.h`, `rendercommand.cpp`)
-    - Encapsulates OpenXR SecureMR operators for rendering,
+    - Encapsulates OpenXR SpatialML operators for rendering,
     - Allows using literal value or C++ variables as operands besides tensors,
-    - Provides an interface for integrating rendering into SecureMR workflows.
+    - Provides an interface for integrating rendering into SpatialML workflows.
 1. Pipeline (`pipeline.h`, `pipeline.cpp`)
-    - Encapsulates data-processing operators in the OpenXR SecureMR extension,
+    - Encapsulates data-processing operators in the OpenXR SpatialML extension,
     - Supports the invokation of Render Commands,
-    - Manages the submission of SecureMR pipelines.
+    - Manages the submission of SpatialML pipelines.
 
 ## Key usage
 
 NOTE: the utility classes are encapsulation of the 
-OpenXR extension for PICO SecureMR. It does not 
-change the behaviors of SecureMR. You may still
+OpenXR extension for PICO SpatialML. It does not
+change the behaviors of SpatialML. You may still
 need to refer to the OpenXR extension's specification
 for detailed usage and notices. 
 
@@ -56,7 +56,7 @@ auto frameworkSession =
 ```
 
 
-### 2. Create a SecureMR pipeline
+### 2. Create a SpatialML pipeline
 
 ```cpp
 m_secureMrVSTImagePipeline = std::make_shared<SecureMr::Pipeline>(frameworkSession);
