@@ -917,7 +917,11 @@ struct OpenXrProgram : IOpenXrProgram {
     std::vector<XrCompositionLayerBaseHeader*> layers;
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     std::vector<XrCompositionLayerProjectionView> projectionLayerViews;
-    if (frameState.shouldRender == XR_TRUE) {
+    // SecureMR model registration and accelerator compilation can use graphics-backed
+    // resources. Keep the OpenXR frame loop alive, but do not submit application graphics
+    // until initialization is complete. xrEndFrame below remains valid with zero layers.
+    const bool secureMrReady = m_secureMrProgram == nullptr || m_secureMrProgram->LoadingFinished();
+    if (frameState.shouldRender == XR_TRUE && secureMrReady) {
       if (RenderLayer(frameState.predictedDisplayTime, projectionLayerViews, layer)) {
         layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer));
       }
@@ -1078,31 +1082,6 @@ struct OpenXrProgram : IOpenXrProgram {
     std::vector<Cube> cubes;
     const bool renderControllerCubes =
         (m_secureMrProgram == nullptr) || m_secureMrProgram->WantsControllerVisualization();
-    static auto firstLoadingTime = std::chrono::steady_clock::now();
-
-    if (!m_secureMrProgram->LoadingFinished()) {
-      XrSpaceLocation spaceLocation{XR_TYPE_SPACE_LOCATION};
-      CHECK_XRCMD(xrLocateSpace(m_spaceForLoading, m_appSpace, predictedDisplayTime, &spaceLocation));
-      if (XR_UNQUALIFIED_SUCCESS(res)) {
-        if ((spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 &&
-            (spaceLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
-          auto loadingTimeInSec = static_cast<float>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                         std::chrono::steady_clock::now() - firstLoadingTime)
-                                                         .count()) /
-                                  1000.0f;
-          auto x = fmod(loadingTimeInSec, 2.0f);
-          auto totalAngle = x * (2.0f - x) * 0.22f + loadingTimeInSec * 0.78539815f;
-          constexpr static XrVector3f Y_AXIS{0.0f, 1.0f, 0.0f};
-          XrQuaternionf loadingRotation;
-          XrQuaternionf_CreateFromAxisAngle(&loadingRotation, &Y_AXIS, totalAngle);
-          XrQuaternionf_Multiply(&spaceLocation.pose.orientation, &spaceLocation.pose.orientation, &loadingRotation);
-          cubes.push_back(Cube{spaceLocation.pose, {0.25f, 0.25f, 0.25f}});
-        }
-      } else {
-        Log::Write(Log::Level::Verbose, Fmt("Unable to locate a visualized reference space in app space: %d", res));
-      }
-    }
-
     // Optionally render a 10cm cube scaled by grabAction for each hand. Note renderHand will only be
     // true when the application has focus.
     std::array<XrVector3f*, 2> handDeltas{};

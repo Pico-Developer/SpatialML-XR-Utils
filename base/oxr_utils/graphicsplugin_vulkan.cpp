@@ -309,13 +309,17 @@ struct CmdBuffer {
 
     CHECK_CBSTATE(CmdBufferState::Executing);
 
-    const uint32_t timeoutNs = 1 * 1000 * 1000 * 1000;
+    const uint64_t timeoutNs = 1ULL * 1000 * 1000 * 1000;
     for (int i = 0; i < 5; ++i) {
       auto res = vkWaitForFences(m_vkDevice, 1, &execFence, VK_TRUE, timeoutNs);
       if (res == VK_SUCCESS) {
         // Buffer can be executed multiple times...
         SetState(CmdBufferState::Executable);
         return true;
+      }
+      if (res != VK_TIMEOUT) {
+        Log::Write(Log::Level::Error, Fmt("Waiting for CmdBuffer fence failed: %d", res));
+        return false;
       }
       Log::Write(Log::Level::Info, "Waiting for CmdBuffer fence timed out, retrying...");
     }
@@ -1713,9 +1717,10 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
     uint32_t imageIndex = swapchainContext->ImageIndex(swapchainImage);
 
     // XXX Should double-buffer the command buffers, for now just flush
-    m_cmdBuffer.Wait();
-    m_cmdBuffer.Reset();
-    m_cmdBuffer.Begin();
+    if (!m_cmdBuffer.Wait() || !m_cmdBuffer.Reset() || !m_cmdBuffer.Begin()) {
+      Log::Write(Log::Level::Error, "Vulkan: command buffer unavailable; skipping view");
+      return;
+    }
 
     // Ensure depth is in the right layout
     swapchainContext->depthBuffer.TransitionLayout(&m_cmdBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -1771,8 +1776,9 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
 
     vkCmdEndRenderPass(m_cmdBuffer.buf);
 
-    m_cmdBuffer.End();
-    m_cmdBuffer.Exec(m_vkQueue);
+    if (!m_cmdBuffer.End() || !m_cmdBuffer.Exec(m_vkQueue)) {
+      Log::Write(Log::Level::Error, "Vulkan: failed to submit view command buffer");
+    }
 
 #if defined(USE_MIRROR_WINDOW)
     // Cycle the window's swapchain on the last view rendered
@@ -1813,9 +1819,10 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
     }
 
     // Flush previous work and begin a new command buffer
-    m_cmdBuffer.Wait();
-    m_cmdBuffer.Reset();
-    m_cmdBuffer.Begin();
+    if (!m_cmdBuffer.Wait() || !m_cmdBuffer.Reset() || !m_cmdBuffer.Begin()) {
+      Log::Write(Log::Level::Error, "Vulkan: command buffer unavailable; skipping user mesh");
+      return;
+    }
 
     // Ensure depth is in the right layout
     swapchainContext->depthBuffer.TransitionLayout(&m_cmdBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -1861,8 +1868,9 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
     vkCmdDrawIndexed(m_cmdBuffer.buf, icount, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(m_cmdBuffer.buf);
-    m_cmdBuffer.End();
-    m_cmdBuffer.Exec(m_vkQueue);
+    if (!m_cmdBuffer.End() || !m_cmdBuffer.Exec(m_vkQueue)) {
+      Log::Write(Log::Level::Error, "Vulkan: failed to submit user-mesh command buffer");
+    }
   }
 
   void UpdateOptions(const std::shared_ptr<Options>& options) override {
@@ -1890,9 +1898,12 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
     vkUnmapMemory(m_vkDevice, stagingMem);
 
     // Record copy for each image
-    m_cmdBuffer.Wait();
-    m_cmdBuffer.Reset();
-    m_cmdBuffer.Begin();
+    if (!m_cmdBuffer.Wait() || !m_cmdBuffer.Reset() || !m_cmdBuffer.Begin()) {
+      Log::Write(Log::Level::Error, "Vulkan: command buffer unavailable; skipping overlay upload");
+      vkDestroyBuffer(m_vkDevice, stagingBuf, nullptr);
+      vkFreeMemory(m_vkDevice, stagingMem, nullptr);
+      return;
+    }
 
     for (auto* base : images) {
       const auto* vkImgHdr = reinterpret_cast<const XrSwapchainImageVulkan2KHR*>(base);
@@ -1942,9 +1953,12 @@ struct VulkanGraphicsPlugin : public IGraphicsPlugin {
                            nullptr, 0, nullptr, 1, &barrierToReadable);
     }
 
-    m_cmdBuffer.End();
-    m_cmdBuffer.Exec(m_vkQueue);
-    m_cmdBuffer.Wait();
+    if (!m_cmdBuffer.End() || !m_cmdBuffer.Exec(m_vkQueue) || !m_cmdBuffer.Wait()) {
+      // If submission is still in flight, retain the staging allocation rather than freeing
+      // memory the GPU may still access. A later upload/render will retry the fence wait.
+      Log::Write(Log::Level::Error, "Vulkan: overlay upload did not complete");
+      return;
+    }
 
     vkDestroyBuffer(m_vkDevice, stagingBuf, nullptr);
     vkFreeMemory(m_vkDevice, stagingMem, nullptr);
